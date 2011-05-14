@@ -24,52 +24,52 @@ import foo.joeledstrom.spreadsheets.WorksheetRow;
 public class SpreadsheetTestActivity extends Activity {
     private Button button1;
     private Account account;
-    
+
     private static final String tag = "SpreadsheetTestActivity";
-    
+
     /** Called when the activity is first created. */
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.main);
-        
+
         button1 = (Button)findViewById(R.id.button1);
-        
+
         button1.setOnClickListener(new OnClickListener() {
-            
+
             @Override
             public void onClick(View v) {
                 AccountManager.get(SpreadsheetTestActivity.this)
                 .getAuthTokenByFeatures("com.google","wise", null, SpreadsheetTestActivity.this, 
-                                    null, null, doneCallback, null);
-            
+                        null, null, doneCallback, null);
+
             }
         });
-        
+
     }
-    
+
     private AccountManagerCallback<Bundle> doneCallback = new AccountManagerCallback<Bundle>() {
         public void run(AccountManagerFuture<Bundle> arg0) {
-            
+
             Bundle b;
             try {
                 b = arg0.getResult();
-                
+
                 String name = b.getString(AccountManager.KEY_ACCOUNT_NAME);
                 String type = b.getString(AccountManager.KEY_ACCOUNT_TYPE);
-                
+
                 account = new Account(name, type);
-                
+
                 new Task().execute();
-                
+
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
-                
+
         }
     };
-    
-    
+
+
     class Task extends AsyncTask<Void, Void, Void> {
         public Void doInBackground(Void... params) {
             TokenSupplier supplier = new TokenSupplier() {
@@ -86,43 +86,43 @@ public class SpreadsheetTestActivity extends Activity {
                     }
                 }
             };
-            
-        
+
+
             SpreadsheetsService service = new SpreadsheetsService("company-app-v2", supplier);
-            
-            
+
+
             FeedResponse<Spreadsheet> spreadsheetFeed = service.getSpreadsheets(); // doesn't cause any IO
-            
+
             try {
-                    // get all spreadsheets
-                    List<Spreadsheet> spreadsheets = spreadsheetFeed.getEntries(); // reads and parses the whole stream
-                    Spreadsheet firstSpreadsheet = spreadsheets.get(0);
-                    
-                    Log.e(tag, firstSpreadsheet.getTitle());
-                    
-                    FeedResponse<Worksheet> worksheets = firstSpreadsheet.getWorksheets(); // no IO again
-                    
-                    
-                    // this only reads and parses the first entry
-                    // might be useful for long spreadsheets like we do below (not really useful for worksheets tho, oh well)
-                    Worksheet sheet = worksheets.getNextEntry(); 
-                    worksheets.close(); 
-                    
-                    Log.e(tag, sheet.getTitle());
-                    
-                    FeedResponse<WorksheetRow> rows = sheet.getRows();
-                    
-                    while(true) {
-                        WorksheetRow e = rows.getNextEntry();
-                        if (e == null)
-                            break;
-                        
-                        Log.e(tag, e.id);
-                    }
+                // get all spreadsheets
+                List<Spreadsheet> spreadsheets = spreadsheetFeed.getEntries(); // reads and parses the whole stream
+                Spreadsheet firstSpreadsheet = spreadsheets.get(0);
+
+                Log.e(tag, firstSpreadsheet.getTitle());
+
+                FeedResponse<Worksheet> worksheets = firstSpreadsheet.getWorksheets(); // no IO again
+
+
+                // this only reads and parses the first entry
+                // might be useful for long spreadsheets like we do below (not really useful for worksheets tho, oh well)
+                Worksheet sheet = worksheets.getNextEntry(); 
+                worksheets.close(); 
+
+                Log.e(tag, sheet.getTitle());
+
+                FeedResponse<WorksheetRow> rows = sheet.getRows();
+
+                while(true) {
+                    WorksheetRow e = rows.getNextEntry();
+                    if (e == null)
+                        break;
+
+                    Log.e(tag, e.getCells().toString());
+                }
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
-            
+
             return null;
         }
     }
