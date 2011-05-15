@@ -14,10 +14,13 @@ import com.google.api.client.http.GenericUrl;
 import com.google.api.client.http.HttpRequest;
 import com.google.api.client.http.HttpRequestFactory;
 import com.google.api.client.http.HttpRequestInitializer;
+import com.google.api.client.http.HttpResponse;
 import com.google.api.client.http.HttpResponseException;
 import com.google.api.client.http.HttpTransport;
 import com.google.api.client.http.xml.atom.AtomFeedParser;
 import com.google.api.client.util.Key;
+import com.google.api.client.xml.XmlNamespaceDictionary;
+
 
 public class SpreadsheetsService {
 
@@ -25,13 +28,14 @@ public class SpreadsheetsService {
     HttpRequestFactory writelyRequestFactory;
     private final String applicationName;
     private final TokenSupplier tokenSupplier;
+    private String wiseToken;
+    private String writelyToken;
+    
 
     private void createRequestFactories() {
         HttpTransport transport = AndroidHttp.newCompatibleTransport();
 
         wiseRequestFactory = transport.createRequestFactory(new HttpRequestInitializer() {
-            String wiseToken;
-
             public void initialize(HttpRequest req) throws IOException {
 
                 if (wiseToken == null)
@@ -46,11 +50,11 @@ public class SpreadsheetsService {
                 req.enableGZipContent = true;
             }
         });
+        
+        
 
         writelyRequestFactory = transport.createRequestFactory(new HttpRequestInitializer() {
-            String writelyToken;
-
-            public void initialize(HttpRequest req) throws IOException {
+           public void initialize(HttpRequest req) throws IOException {
                 if (writelyToken == null)
                     writelyToken = tokenSupplier.getToken("writely");
 
@@ -79,17 +83,13 @@ public class SpreadsheetsService {
         createRequestFactories();
 
         // from Google IO 2011 talk:
-        Logger.getLogger("com.google.api.client.http").setLevel(Level.ALL);
+        // Note. enabling this causes OutOfMemoryError on large spreadsheets
+        Logger.getLogger("com.google.api.client.http").setLevel(Level.ALL);  
         // ALSO RUN FROM SHELL: adb shell setprop log.tag.HttpTransport DEBUG
 
     }
 
-    public FeedResponse<Spreadsheet> getSpreadsheets() {
-        return getSpreadsheets(null);
-    }
-    public FeedResponse<Spreadsheet> getSpreadsheets(String title) {
-        return Spreadsheet.get(this, title);
-    }
+   
 
     public static class SpreadsheetsException extends Exception {
         private static final long serialVersionUID = 7081303654609337713L;
@@ -125,7 +125,108 @@ public class SpreadsheetsService {
 
     }
 
+    abstract class Request<T> {
+        
+        abstract T run() throws IOException, XmlPullParserException;
+        
+        public final T execute() throws IOException, SpreadsheetsException {
+            return internalExecute(false);
+        }
+        private final T internalExecute(boolean retryAfterInvalidation) throws IOException, SpreadsheetsException {
+           
+            try {
+                T response = run();
+                return response;
+            } catch (HttpResponseException e) {
+                if (retryAfterInvalidation || e.getMessage().equals("401 Token expired")) {
+                    tokenSupplier.invalidateToken(wiseToken);
+                    tokenSupplier.invalidateToken(writelyToken);
+                    wiseToken = null;
+                    writelyToken = null;
 
+                    return internalExecute(true);
+                //} else if (e.getMessage().equals("304 Not Modified")) {
+                    
+                
+                    
+                } else {
+                    throw new SpreadsheetsHttpException(e.response.statusCode, e.response.statusMessage);
+                }
+            } catch (XmlPullParserException e) {
+                throw new SpreadsheetsException(e.getMessage());
+            } 
+           
+            
+        }
+    }
+    
+    @SuppressWarnings("rawtypes")
+    public abstract class FeedIterator<T> {
+     
+        private boolean closed;
+        
+        protected AtomFeedParser feedParser;
+        abstract void init() throws IOException, XmlPullParserException;
+        abstract T parseOne() throws IOException, XmlPullParserException;
+
+        FeedIterator() throws IOException, SpreadsheetsException {
+            new Request<Void>() {
+                public Void run() throws IOException, XmlPullParserException {
+                    init();
+                    
+                    feedParser.parseFeed(); // hack to prevent NPE (bug in API?)
+                    return null;
+                }
+            }.execute();
+        }
+     
+
+        public T getNextEntry() throws IOException, SpreadsheetsException {
+            return new Request<T>() {
+                public T run() throws IOException, XmlPullParserException {
+                    boolean success = false;
+                    try {
+                        T entry = parseOne();
+                        
+                        if (entry != null)
+                            success = true;
+                        
+                        return entry;
+                    } finally {
+                        if (!success)
+                            close();
+                    }
+                }
+            }.execute();
+        }     
+        
+        public final void close() {
+            try {
+                closed = true;
+                feedParser.close();
+            } catch (IOException e) 
+            {} // really ignore this
+
+        }
+
+        public final List<T> getEntries() throws IOException, SpreadsheetsException {
+            if (closed)
+                throw new IllegalStateException("getEntries() cant be called twice on the same FeedIterator");
+
+            List<T> list = new ArrayList<T>();
+
+            while (true) {
+                T entry = getNextEntry();
+                if (entry == null)
+                    break;
+                list.add(entry);
+            }
+
+            return list;
+        }
+    }
+
+    /*
     public abstract class FeedResponse<T> {
 
         private boolean initDone;
@@ -148,6 +249,7 @@ public class SpreadsheetsService {
         }
 
         public final T getNextEntry() throws IOException, SpreadsheetsException {
+            boolean success = false;
             try {
                 runInit();
                 T entry = parseOne();
@@ -156,13 +258,16 @@ public class SpreadsheetsService {
                     close();
                 }
 
+                success = true;
                 return entry;
 
             } catch (HttpResponseException e) {
                 if (e.getMessage() == "401 Token expired") {
-                    tokenSupplier.invalidateToken("wise");
-                    tokenSupplier.invalidateToken("writely");
-                    createRequestFactories();
+                    
+                    tokenSupplier.invalidateToken(wiseToken);
+                    tokenSupplier.invalidateToken(writelyToken);
+                    wiseToken = null;
+                    writelyToken = null;
 
                     //TODO: protect against infinite loop (stack overflow)
                     return getNextEntry(); 
@@ -172,7 +277,8 @@ public class SpreadsheetsService {
             } catch (XmlPullParserException e) {
                 throw new SpreadsheetsException(e.getMessage());
             } finally {
-                close();
+                if (!success)
+                    close();
             }
         }
 
@@ -200,7 +306,64 @@ public class SpreadsheetsService {
 
             return list;
         }
+    }*/
+    
+    
+    public FeedIterator<Spreadsheet> getSpreadsheets(String title) throws IOException, SpreadsheetsException {
+        return getSpreadsheets(title, false);
     }
+    
+    public FeedIterator<Spreadsheet> getSpreadsheets() throws IOException, SpreadsheetsException {
+        return getSpreadsheets(null, null);
+    }
+    
+    public Spreadsheet getSpreadsheet(String title) throws IOException, SpreadsheetsException {
+        return getSpreadsheets(title, true).getEntries().get(0);
+    }
+    
+    static final XmlNamespaceDictionary SPREADSHEET_FEED_NS = new XmlNamespaceDictionary()
+    .set("", "http://www.w3.org/2005/Atom")
+    .set("openSearch", "http://a9.com/-/spec/opensearch/1.1/")
+    .set("gd", "http://schemas.google.com/g/2005");
+    
+    private FeedIterator<Spreadsheet> getSpreadsheets(final String title, final Boolean exact) throws IOException, SpreadsheetsException {
+        return new FeedIterator<Spreadsheet>() {
+            public void init() throws IOException, XmlPullParserException {
+                WiseUrl url = new WiseUrl("https://spreadsheets.google.com/feeds/spreadsheets/private/full");
+                url.title = title;
+                url.title_exact = exact;
+                
+                HttpResponse response = wiseRequestFactory.buildGetRequest(url).execute();
+
+                feedParser = 
+                    AtomFeedParser.create(response, SPREADSHEET_FEED_NS, SpreadsheetFeed.class, SpreadsheetEntry.class);
+            }
+
+            public Spreadsheet parseOne() throws IOException, XmlPullParserException {
+                SpreadsheetEntry entry = (SpreadsheetEntry)feedParser.parseNextEntry();
+
+                if (entry == null)
+                    return null;
+
+                return new Spreadsheet(SpreadsheetsService.this, entry.title, entry.content.src);
+            }
+
+        };
+    }
+    
+
+    public static class SpreadsheetFeed {
+        @Key("entry") public List<SpreadsheetEntry> entries;
+
+    }
+    public static class SpreadsheetEntry {
+        @Key public String title;
+        @Key public SpreadsheetContent content;
+    }
+    public static class SpreadsheetContent {
+        @Key("@src") public String src;
+    }
+    
     static class WiseUrl extends GenericUrl {
         @Key String title;
         @Key("title-exact") Boolean title_exact;

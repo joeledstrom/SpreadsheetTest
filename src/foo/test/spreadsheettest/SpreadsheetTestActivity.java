@@ -16,7 +16,7 @@ import android.view.View.OnClickListener;
 import android.widget.Button;
 import foo.joeledstrom.spreadsheets.Spreadsheet;
 import foo.joeledstrom.spreadsheets.SpreadsheetsService;
-import foo.joeledstrom.spreadsheets.SpreadsheetsService.FeedResponse;
+import foo.joeledstrom.spreadsheets.SpreadsheetsService.FeedIterator;
 import foo.joeledstrom.spreadsheets.SpreadsheetsService.TokenSupplier;
 import foo.joeledstrom.spreadsheets.Worksheet;
 import foo.joeledstrom.spreadsheets.WorksheetRow;
@@ -80,7 +80,7 @@ public class SpreadsheetTestActivity extends Activity {
                 @Override
                 public String getToken(String authTokenType) {
                     try {
-                        return AccountManager.get(SpreadsheetTestActivity.this).blockingGetAuthToken(account, "wise", true);
+                        return AccountManager.get(SpreadsheetTestActivity.this).blockingGetAuthToken(account, "wise", false);
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
@@ -91,16 +91,18 @@ public class SpreadsheetTestActivity extends Activity {
             SpreadsheetsService service = new SpreadsheetsService("company-app-v2", supplier);
 
 
-            FeedResponse<Spreadsheet> spreadsheetFeed = service.getSpreadsheets(); // doesn't cause any IO
+            
 
             try {
+                FeedIterator<Spreadsheet> spreadsheetFeed = service.getSpreadsheets();
                 // get all spreadsheets
+                
                 List<Spreadsheet> spreadsheets = spreadsheetFeed.getEntries(); // reads and parses the whole stream
                 Spreadsheet firstSpreadsheet = spreadsheets.get(0);
 
                 Log.e(tag, firstSpreadsheet.getTitle());
 
-                FeedResponse<Worksheet> worksheets = firstSpreadsheet.getWorksheets(); // no IO again
+                FeedIterator<Worksheet> worksheets = firstSpreadsheet.getWorksheets(); 
 
 
                 // this only reads and parses the first entry
@@ -110,15 +112,19 @@ public class SpreadsheetTestActivity extends Activity {
 
                 Log.e(tag, sheet.getTitle());
 
-                FeedResponse<WorksheetRow> rows = sheet.getRows();
+                FeedIterator<WorksheetRow> rows = sheet.getRows(null, null, true);
 
                 while(true) {
                     WorksheetRow e = rows.getNextEntry();
                     if (e == null)
                         break;
 
-                    Log.e(tag, e.getCells().toString());
+                    Log.e(tag, e.getColumnNames().toString());
+                    
+                    //e.setValue("kaka", "05");
+                    //e.commitChanges();
                 }
+                
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }

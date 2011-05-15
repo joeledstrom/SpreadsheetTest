@@ -1,101 +1,129 @@
 package foo.joeledstrom.spreadsheets;
 
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.List;
+import java.util.Formatter;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import org.xmlpull.v1.XmlPullParserException;
 
-import com.google.api.client.http.HttpResponse;
-import com.google.api.client.http.xml.atom.AtomFeedParser;
-import com.google.api.client.util.Key;
-import com.google.api.client.xml.GenericXml;
-import com.google.api.client.xml.XmlNamespaceDictionary;
+import android.util.Log;
 
-import foo.joeledstrom.spreadsheets.SpreadsheetsService.FeedResponse;
+import com.google.api.client.googleapis.GoogleHeaders;
+import com.google.api.client.http.ByteArrayContent;
+import com.google.api.client.http.HttpContent;
+import com.google.api.client.http.HttpRequest;
+import com.google.api.client.http.HttpResponse;
+import com.google.api.client.http.xml.atom.AtomParser;
+
+import foo.joeledstrom.spreadsheets.SpreadsheetsService.SpreadsheetsException;
 import foo.joeledstrom.spreadsheets.SpreadsheetsService.WiseUrl;
+import foo.joeledstrom.spreadsheets.Worksheet.ListEntry;
 
 public class WorksheetRow {
 
-    static final XmlNamespaceDictionary LIST_FEED_NS = new XmlNamespaceDictionary()
-    .set("", "http://www.w3.org/2005/Atom")
-    .set("openSearch", "http://a9.com/-/spec/opensearch/1.1/")
-    .set("gs", "http://schemas.google.com/spreadsheets/2006")
-    .set("gd", "http://schemas.google.com/g/2005")
-    .set("app", "http://www.w3.org/2007/app");
-
 
     private final SpreadsheetsService service;
-    private Map<String, String> cells;
+    private Map<String, String> values;
+    private String editUrl;
+    private boolean dirty;
     private String id;
+    private String eTag;
 
-    public Map<String, String> getCells() {
-        return cells;
+    
+    public String getValue(String columnName) {
+        return values.get(columnName);
+    }
+    
+    public void setValue(String columnName, String value) {
+        dirty = true;
+        values.put(columnName, value);
     }
 
+    public Set<String> getColumnNames() {
+        return values.keySet();
+    }
 
+    public boolean commitChanges() throws IOException, SpreadsheetsException {
+        return commitChanges(true);
+    }
+    
+    public void applyChanges() throws IOException, SpreadsheetsException {
+        commitChanges(false);
+    }
+    
+    private boolean commitChanges(final boolean useETag) throws IOException, SpreadsheetsException {
+        
+        final StringBuilder builder = new StringBuilder();
+        Formatter formatter = new Formatter(builder, Locale.US); 
+        
+        builder.append("<entry xmlns=\"http://www.w3.org/2005/Atom\" " +
+                "xmlns:gsx=\"http://schemas.google.com/spreadsheets/2006/extended\">");
+        
+        
+        for (Map.Entry<String, String> value : values.entrySet()) 
+            formatter.format("<gsx:%1$s>%2$s</gsx:%1$s>", value.getKey(), value.getValue());
+        builder.append("</entry>");
+       
+        WorksheetRow updatedRow;
+        try {
+            updatedRow = service.new Request<WorksheetRow>() {
+                public WorksheetRow run() throws IOException, XmlPullParserException {
+                    
+                    AtomParser atomParser = new AtomParser();
+                    atomParser.namespaceDictionary = Worksheet.LIST_FEED_NS;
+                    
+                    WiseUrl url = new WiseUrl(editUrl);
+                    HttpContent content = new ByteArrayContent(builder.toString());        
 
-    WorksheetRow(SpreadsheetsService service, String id, Map<String, String> cells) {
+                    HttpRequest request = service.wiseRequestFactory.buildPutRequest(url, content);
+                    request.enableGZipContent = false;
+                    
+                    GoogleHeaders headers = (GoogleHeaders)request.headers;
+                    headers.contentType = "application/atom+xml";
+                    headers.acceptEncoding = null;
+                    headers.contentEncoding = null;
+                    
+                    if (useETag)
+                        headers.ifMatch = eTag;
+                    else
+                        headers.ifMatch = "*";
+            
+                    HttpResponse response = request.execute();
+                    
+                    ListEntry entry = atomParser.parse(response, ListEntry.class);
+                    
+                    return new WorksheetRow(service, entry.etag, entry.id, entry.getEditUrl(), entry.getValues());
+           
+                }
+            }.execute();
+            
+            editUrl = updatedRow.editUrl;
+            eTag = updatedRow.eTag;
+            id = updatedRow.id;
+            values = updatedRow.values;
+            dirty = false;
+            
+            return true;
+        } catch (SpreadsheetsException e) {
+            if (e.getMessage().equals("412 Precondition Failed")) {
+                return false;
+            } else {
+                throw e;
+            }
+        }
+    }
+
+    WorksheetRow(SpreadsheetsService service, String eTag, String id, String editUrl, Map<String, String> values) {
         this.service = service;
         this.id = id;
-        this.cells = cells;
+        this.editUrl = editUrl;
+        this.values = values;
+        this.eTag = eTag;
     }
 
 
-    static FeedResponse<WorksheetRow> get(final SpreadsheetsService service, final String listFeed, 
-            final String sq, final String orderby, final boolean reverse) {
-
-        return service.new FeedResponse<WorksheetRow>() {
-
-
-            public void init() throws IOException, XmlPullParserException {
-                WiseUrl url = new WiseUrl(listFeed);
-
-                url.sq = sq;
-                url.orderby = orderby;
-                url.reverse = reverse;
-
-                HttpResponse response = service.wiseRequestFactory.buildGetRequest(url).execute();
-
-                feedParser =
-                    AtomFeedParser.create(response, LIST_FEED_NS, ListFeed.class, ListEntry.class);
-
-            }
-            @SuppressWarnings("rawtypes")
-            public WorksheetRow parseOne() throws IOException, XmlPullParserException {
-                ListEntry entry = (ListEntry)feedParser.parseNextEntry();
-
-                if (entry == null)
-                    return null;
-
-                Map<String, String> cells = new HashMap<String,String>();
-
-                for (Map.Entry<String, Object> e : entry.entrySet()) {
-                    String key = e.getKey();
-
-                    if (key.startsWith("gsx:")) {
-                        String value;
-                        try {
-                            value = ((Map)((List)e.getValue()).get(0)).get("text()").toString();
-                        } catch (Exception ex) {
-                            throw new XmlPullParserException("XML gsx elements changed format");
-                        }
-                        cells.put(key.substring(4), value);
-                    }
-                }
-
-                return new WorksheetRow(service, entry.id, cells);
-            }
-        };
-    }
-
-    public static class ListFeed {
-        @Key("entry") public List<String> entries;
-    }
-
-    public static class ListEntry extends GenericXml {
-        @Key public String id;
-    }
+    
 
 }
