@@ -1,12 +1,31 @@
+/*
+ * Copyright (c) 2011 Joel Edström
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package foo.joeledstrom.spreadsheets;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Formatter;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 import org.xmlpull.v1.XmlPullParserException;
 
@@ -29,25 +48,33 @@ import foo.joeledstrom.spreadsheets.SpreadsheetsService.WiseUrl;
 public class Worksheet {
     
 
-
+    private SpreadsheetsService service;
+    private String id;
     private String title;
     private String listFeed;
-    private final SpreadsheetsService service;
+    private String cellsFeed;
+    
     private AtomParser atomParser;
 
-    Worksheet(SpreadsheetsService service, String title, String listFeed) {
+    Worksheet(SpreadsheetsService service, String id, String title, String listFeed, String cellsFeed) {
+        this.service = service;
+        this.id = id;
         this.title = title;
         this.listFeed = listFeed;
-        this.service = service;
+        this.cellsFeed = cellsFeed;
     }
 
 
     public String getTitle() {
         return title;
     }
+    
+    public String getId() {
+        return id;
+    }
 
     
-    public Set<String> getColumnNames() throws IOException, SpreadsheetsException {
+    public Set<String> getColumns() throws IOException, SpreadsheetsException {
         FeedIterator<WorksheetRow> rows = getRows();
         WorksheetRow firstEntry = rows.getNextEntry();
         rows.close(); 
@@ -55,18 +82,154 @@ public class Worksheet {
         return firstEntry.getColumnNames();
     }
     
-    public WorksheetRow addRow(Map <String, String> values) throws IOException, SpreadsheetsException {
+  
+    
+    static final XmlNamespaceDictionary CELLS_FEED_NS = new XmlNamespaceDictionary()
+    .set("", "http://www.w3.org/2005/Atom")
+    .set("openSearch", "http://a9.com/-/spec/opensearch/1.1/")
+    .set("gs", "http://schemas.google.com/spreadsheets/2006")
+    .set("gd", "http://schemas.google.com/g/2005")
+    .set("app", "http://www.w3.org/2007/app")
+    .set("batch", "http://schemas.google.com/gdata/batch");
+    
+    
+    static class RowUploadToken {
+        public RowUploadToken(int row, List<String> cells) {
+            this.row = row;
+            this.cells = cells;
+        }
+        public final int row;
+        public final List<String> cells; 
+        int cellsUploaded;
+    } 
+    
+    // was't planning on making these public because it can't really guarantee that uploads were done correctly (no etag support)
+    Collection<RowUploadToken> batchUpload(final Iterable<RowUploadToken> rows) throws IOException, SpreadsheetsException {
+        
+        final Map<String, RowUploadToken> transfersInFlight = new HashMap<String, RowUploadToken>();
+        final StringBuilder builder = new StringBuilder();
+       
+        builder.append("<feed xmlns=\"http://www.w3.org/2005/Atom\" ")
+        .append("xmlns:batch=\"http://schemas.google.com/gdata/batch\" ")
+        .append("xmlns:gs=\"http://schemas.google.com/spreadsheets/2006\">")
+        .append("<id>").append(cellsFeed).append("</id>");
+        
+        for (RowUploadToken token : rows) {
+
+            for (int i = 0; i < token.cells.size(); i++) {
+     
+                // i thought adding the UUID below would fix the "Feed processing was interrupted."
+                // "a response has already been sent for batch operation update id=XXXXXX" errors.
+                // but doesn't seem like it           
+                String batchId = token.hashCode() + "_" + i + UUID.randomUUID();
+                
+                builder.append("<entry>")
+                .append("<batch:id>").append(batchId).append("</batch:id>")
+                .append("<batch:operation type=\"update\"/>")
+                .append("<id>").append(cellsFeed).append("/R"+token.row+"C"+(i+1)).append("</id>")
+                .append("<link rel=\"edit\" type=\"application/atom+xml\" ")
+                .append("href=\"").append(cellsFeed).append("/R"+token.row+"C"+(i+1)).append("\"/>")
+                .append("<gs:cell row=\"").append(token.row)
+                .append("\" col=\"").append(i+1)
+                .append("\" inputValue=\"").append(token.cells.get(i)).append("\"/>")
+                .append("</entry>");
+            }
+            token.cellsUploaded = 0;  // reset this because the user may upload the same token again, after failure
+            transfersInFlight.put(token.hashCode() + "", token);
+            
+        }
+        builder.append("</feed>");
+        
+        service.new Request<Void>() {
+            public Void run() throws IOException, XmlPullParserException {
+                WiseUrl url = new WiseUrl(cellsFeed + "/batch");
+                HttpContent content = new ByteArrayContent(builder.toString());
+                HttpRequest request = service.wiseRequestFactory.buildPostRequest(url, content);
+                request.enableGZipContent = false;
+                
+                GoogleHeaders headers = (GoogleHeaders)request.headers;
+                headers.contentType = "application/atom+xml";
+                headers.acceptEncoding = null;
+                headers.contentEncoding = null;
+                headers.ifMatch = "*";
+                
+                HttpResponse response = request.execute();
+                
+                AtomFeedParser<CellsFeed, CellsEntry> feedParser = 
+                    AtomFeedParser.create(response, CELLS_FEED_NS, CellsFeed.class, CellsEntry.class);
+                
+                try {
+                    feedParser.parseFeed(); 
+                    
+                    while (true) {
+                        CellsEntry entry = feedParser.parseNextEntry();
+                        if (entry == null || entry.batchId == null) {
+                            break;
+                        }
+                        
+                        int divider = entry.batchId.indexOf("_");
+                        String perRowBatchId = entry.batchId.substring(0, divider);
+                        
+                        RowUploadToken token = transfersInFlight.get(perRowBatchId);
+                        token.cellsUploaded++;
+                        
+                        if (token.cellsUploaded == token.cells.size()) {
+                            // row completed
+                            if (entry.batchStatus.code.equals("200")) // successfully
+                                transfersInFlight.remove(perRowBatchId); 
+                        }
+                    }
+                    
+                } finally {
+                    try {
+                        feedParser.close();
+                    } catch (IOException e) 
+                    {} // really ignore this
+                }
+                
+                return null;
+            }
+        }.execute();
+     
+        
+        // return the failed transfers
+        return transfersInFlight.values();
+    }
+    
+  
+    
+    public void setColumns(List<String> columnNames) throws IOException, SpreadsheetsException {
+        List<RowUploadToken> rows = Arrays.asList(new RowUploadToken(1, columnNames));
+        
+        
+        Collection<RowUploadToken> failedUploads = batchUpload(rows);
+        
+        int retryCounter = 0;
+        while (failedUploads.size() != 0) {
+            if(retryCounter > 3)
+                throw new SpreadsheetsException("setColumns(..) FAILURE");
+            
+            
+            failedUploads = batchUpload(failedUploads);
+            retryCounter++;
+        
+        }      
+    }
+    
+    public WorksheetRow addRow(Map<String, String> values) throws IOException, SpreadsheetsException {
         if (atomParser == null) {
             atomParser = new AtomParser();
             atomParser.namespaceDictionary = LIST_FEED_NS;
         }
         
-        final StringBuilder builder = new StringBuilder()
-            .append("<entry xmlns=\"http://www.w3.org/2005/Atom\" xmlns:gsx=\"http://schemas.google.com/spreadsheets/2006/extended\">");
+        final StringBuilder builder = new StringBuilder();
+            
+        builder.append("<entry xmlns=\"http://www.w3.org/2005/Atom\" xmlns:gsx=\"http://schemas.google.com/spreadsheets/2006/extended\">");
         Formatter formatter = new Formatter(builder, Locale.US); 
         for (Map.Entry<String, String> value : values.entrySet()) 
             formatter.format("<gsx:%1$s>%2$s</gsx:%1$s>", value.getKey(), value.getValue());
         builder.append("</entry>");
+        
         
         return service.new Request<WorksheetRow>() {
             public WorksheetRow run() throws IOException, XmlPullParserException {
@@ -101,35 +264,64 @@ public class Worksheet {
         return getRows(null, null, false);
     }
     public FeedIterator<WorksheetRow> getRows(final String sq, final String orderby, final boolean reverse) 
-            throws IOException, SpreadsheetsException {
-        return service.new FeedIterator<WorksheetRow>() {
-            public void init() throws IOException, XmlPullParserException {
-                WiseUrl url = new WiseUrl(listFeed);
-
-                url.sq = sq;
-                if (orderby != null)
-                    url.orderby = "column:" + orderby;
-                url.reverse = reverse;
-
-                HttpResponse response = service.wiseRequestFactory.buildGetRequest(url).execute();
-
-                feedParser =
-                    AtomFeedParser.create(response, LIST_FEED_NS, ListFeed.class, ListEntry.class);
-
+                                              throws IOException, SpreadsheetsException {
+        return getRows(sq, orderby, reverse, null);
+    }
+    public FeedIterator<WorksheetRow> getRows(final String sq, final String orderby, 
+                                              final boolean reverse, final FeedIterator<WorksheetRow> lastQuery) 
+                                              throws IOException, SpreadsheetsException {
+        
+        try {
+            return service.new FeedIterator<WorksheetRow>() {
+                public void init() throws IOException, XmlPullParserException {
+                    boolean abortedBecauseNotModified = true;
+                    HttpResponse response = null;
+                    try {
+                        WiseUrl url = new WiseUrl(listFeed);
+        
+                        url.sq = sq;
+                        if (orderby != null)
+                            url.orderby = "column:" + orderby;
+                        url.reverse = reverse;
+        
+                        HttpRequest request = service.wiseRequestFactory.buildGetRequest(url);
+                        
+                        if (lastQuery != null) {
+                            request.headers.ifNoneMatch = lastQuery.etag;
+                        }
+                        
+                        response = request.execute();
+                      
+                        etag =  response.headers.etag;
+                        feedParser =
+                            AtomFeedParser.create(response, LIST_FEED_NS, ListFeed.class, ListEntry.class);
+                        
+                        abortedBecauseNotModified = false;
+                    } finally {
+                        if (abortedBecauseNotModified && response != null)
+                            response.ignore(); // clear up resources if we dont need the content of the response
+                    }
+                }
+                public WorksheetRow parseOne() throws IOException, XmlPullParserException {
+                    ListEntry entry = (ListEntry)feedParser.parseNextEntry();
+    
+                    if (entry == null)
+                        return null;
+    
+                    return new WorksheetRow(service, entry.etag, entry.id, entry.getEditUrl(), entry.getValues());
+                }
+            };
+        } catch (SpreadsheetsException e) {
+            if (e.getMessage().equals("304 Not Modified")) {
+                return null;
+            } else {
+                throw e;
             }
-            public WorksheetRow parseOne() throws IOException, XmlPullParserException {
-                ListEntry entry = (ListEntry)feedParser.parseNextEntry();
-
-                if (entry == null)
-                    return null;
-
-                return new WorksheetRow(service, entry.etag, entry.id, entry.getEditUrl(), entry.getValues());
-            }
-        };
+        }
     }
     
     
-
+    // model classes for ListFeed
     public static class ListFeed {
         @Key("entry") public List<String> entries;
     }
@@ -154,7 +346,7 @@ public class Worksheet {
                         value = textOfElement == null ? "" : textOfElement.toString();
 
                     } catch (Exception ex) {
-                        throw new XmlPullParserException("List feed entry structure changed (gsx)");
+                        throw new XmlPullParserException("List feed entry structure incorrect (gsx)");
                     }
                     values.put(key.substring(4), value);
                 }
@@ -171,15 +363,26 @@ public class Worksheet {
                 }
             }
             if (editUrl == null) 
-                throw new XmlPullParserException("List feed entry structure changed (edit url)");
+                throw new XmlPullParserException("List feed entry structure incorrect (edit url)");
             
             return editUrl;
         }
     }
-    
     public static class ListLink {
         @Key("@rel") public String rel;
         @Key("@href") public String href;
     }
-
+    
+    
+    // model classes for CellFeed used in batchUpload(..) 
+    public static class CellsFeed {
+        @Key("entry") public List<CellsEntry> entries;
+    }
+    public static class CellsEntry {
+        @Key("batch:id") public String batchId;
+        @Key("batch:status") public CellsBatchStatus batchStatus;
+    }
+    public static class CellsBatchStatus {
+        @Key("@code") public String code;
+    }
 }

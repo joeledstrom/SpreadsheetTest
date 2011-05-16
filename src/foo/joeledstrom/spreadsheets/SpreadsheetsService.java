@@ -1,3 +1,19 @@
+/*
+ * Copyright (c) 2011 Joel Edström
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package foo.joeledstrom.spreadsheets;
 
 import java.io.IOException;
@@ -145,10 +161,6 @@ public class SpreadsheetsService {
                     writelyToken = null;
 
                     return internalExecute(true);
-                //} else if (e.getMessage().equals("304 Not Modified")) {
-                    
-                
-                    
                 } else {
                     throw new SpreadsheetsHttpException(e.response.statusCode, e.response.statusMessage);
                 }
@@ -162,10 +174,10 @@ public class SpreadsheetsService {
     
     @SuppressWarnings("rawtypes")
     public abstract class FeedIterator<T> {
-     
         private boolean closed;
         
-        protected AtomFeedParser feedParser;
+        protected AtomFeedParser feedParser;  // assign in init()
+        protected String etag; // assign in init() 
         abstract void init() throws IOException, XmlPullParserException;
         abstract T parseOne() throws IOException, XmlPullParserException;
 
@@ -173,7 +185,7 @@ public class SpreadsheetsService {
             new Request<Void>() {
                 public Void run() throws IOException, XmlPullParserException {
                     init();
-                    
+                   
                     feedParser.parseFeed(); // hack to prevent NPE (bug in API?)
                     return null;
                 }
@@ -227,24 +239,26 @@ public class SpreadsheetsService {
     }
 
    
-    public FeedIterator<Spreadsheet> getSpreadsheets(String title) throws IOException, SpreadsheetsException {
-        return getSpreadsheets(title, false);
-    }
     
-    public FeedIterator<Spreadsheet> getSpreadsheets() throws IOException, SpreadsheetsException {
-        return getSpreadsheets(null, null);
-    }
     
-    public Spreadsheet getSpreadsheet(String title) throws IOException, SpreadsheetsException {
-        return getSpreadsheets(title, true).getEntries().get(0);
-    }
     
     static final XmlNamespaceDictionary SPREADSHEET_FEED_NS = new XmlNamespaceDictionary()
     .set("", "http://www.w3.org/2005/Atom")
     .set("openSearch", "http://a9.com/-/spec/opensearch/1.1/")
     .set("gd", "http://schemas.google.com/g/2005");
     
-    private FeedIterator<Spreadsheet> getSpreadsheets(final String title, final Boolean exact) throws IOException, SpreadsheetsException {
+    public FeedIterator<Spreadsheet> getSpreadsheets() throws IOException, SpreadsheetsException {
+        return getSpreadsheets(null, null);
+    }
+    public FeedIterator<Spreadsheet> getSpreadsheets(String title) throws IOException, SpreadsheetsException {
+        // note: even though this uses exact matching it may return multiple spreadsheets, titles are not unique on GoogleDocs.
+        return getSpreadsheets(title, true);
+    }
+    public FeedIterator<Spreadsheet> getSpreadsheetsInexactMatch(String title) throws IOException, SpreadsheetsException {
+        return getSpreadsheets(title, false);
+    }
+    
+    public FeedIterator<Spreadsheet> getSpreadsheets(final String title, final Boolean exact) throws IOException, SpreadsheetsException {
         return new FeedIterator<Spreadsheet>() {
             public void init() throws IOException, XmlPullParserException {
                 WiseUrl url = new WiseUrl("https://spreadsheets.google.com/feeds/spreadsheets/private/full");

@@ -1,6 +1,8 @@
 package foo.test.spreadsheettest;
 
 
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 
 import android.accounts.Account;
@@ -61,6 +63,7 @@ public class SpreadsheetTestActivity extends Activity {
                 account = new Account(name, type);
 
                 new Task().execute();
+                
 
             } catch (Exception e) {
                 throw new RuntimeException(e);
@@ -100,31 +103,29 @@ public class SpreadsheetTestActivity extends Activity {
                 List<Spreadsheet> spreadsheets = spreadsheetFeed.getEntries(); // reads and parses the whole stream
                 Spreadsheet firstSpreadsheet = spreadsheets.get(0);
 
-                Log.e(tag, firstSpreadsheet.getTitle());
-
-                FeedIterator<Worksheet> worksheets = firstSpreadsheet.getWorksheets(); 
-
-
-                // this only reads and parses the first entry
-                // might be useful for long spreadsheets like we do below (not really useful for worksheets tho, oh well)
-                Worksheet sheet = worksheets.getNextEntry(); 
-                worksheets.close(); 
-
-                Log.e(tag, sheet.getTitle());
-
-                FeedIterator<WorksheetRow> rows = sheet.getRows(null, null, true);
-
-                while(true) {
-                    WorksheetRow e = rows.getNextEntry();
-                    if (e == null)
-                        break;
-
-                    Log.e(tag, e.getColumnNames().toString());
-                    
-                    //e.setValue("kaka", "05");
-                    //e.commitChanges();
-                }
                 
+                Worksheet sheet = firstSpreadsheet.addWorksheet("Test sheet 1", Arrays.asList(new String[] {"col", "date", "content", "whatever"}));
+                
+                
+                sheet.addRow(new HashMap<String, String>() {{
+                    put("col", "A VALUE");
+                    put("content", "testing !");
+                }});
+                
+                WorksheetRow row = sheet.addRow(new HashMap<String, String>() {{
+                    put("col", "another value");
+                    put("date", "43636544");
+                }});
+                
+                row.setValue("content", "changed this row!");
+                
+                // commitChanges() returns false, if it couldnt safely change the row
+                // (someone else changed the row before we commited)
+                row.commitChanges();
+               
+                
+                
+                Log.e(tag, "DONE");
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
