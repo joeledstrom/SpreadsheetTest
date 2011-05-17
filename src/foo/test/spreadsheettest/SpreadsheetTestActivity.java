@@ -83,7 +83,7 @@ public class SpreadsheetTestActivity extends Activity {
                 @Override
                 public String getToken(String authTokenType) {
                     try {
-                        return AccountManager.get(SpreadsheetTestActivity.this).blockingGetAuthToken(account, "wise", false);
+                        return AccountManager.get(SpreadsheetTestActivity.this).blockingGetAuthToken(account, authTokenType, true);
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
@@ -97,6 +97,7 @@ public class SpreadsheetTestActivity extends Activity {
             
 
             try {
+                service.createSpreadsheet("new spreadsheet 1", true);
                 FeedIterator<Spreadsheet> spreadsheetFeed = service.getSpreadsheets();
                 // get all spreadsheets
                 
@@ -122,6 +123,8 @@ public class SpreadsheetTestActivity extends Activity {
                 // commitChanges() returns false, if it couldnt safely change the row
                 // (someone else changed the row before we commited)
                 row.commitChanges();
+                
+                
                
                 
                 

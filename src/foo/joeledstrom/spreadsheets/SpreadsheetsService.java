@@ -26,6 +26,7 @@ import org.xmlpull.v1.XmlPullParserException;
 
 import com.google.api.client.extensions.android2.AndroidHttp;
 import com.google.api.client.googleapis.GoogleHeaders;
+import com.google.api.client.http.ByteArrayContent;
 import com.google.api.client.http.GenericUrl;
 import com.google.api.client.http.HttpRequest;
 import com.google.api.client.http.HttpRequestFactory;
@@ -67,8 +68,6 @@ public class SpreadsheetsService {
             }
         });
         
-        
-
         writelyRequestFactory = transport.createRequestFactory(new HttpRequestInitializer() {
            public void initialize(HttpRequest req) throws IOException {
                 if (writelyToken == null)
@@ -141,26 +140,27 @@ public class SpreadsheetsService {
 
     }
 
+    // Automatically retries all requests after invalidating tokens, and converts exceptions.
     abstract class Request<T> {
         
         abstract T run() throws IOException, XmlPullParserException;
         
         public final T execute() throws IOException, SpreadsheetsException {
-            return internalExecute(false);
+            return internalExecute(true);
         }
-        private final T internalExecute(boolean retryAfterInvalidation) throws IOException, SpreadsheetsException {
+        private final T internalExecute(boolean firstTry) throws IOException, SpreadsheetsException {
            
             try {
                 T response = run();
                 return response;
             } catch (HttpResponseException e) {
-                if (retryAfterInvalidation || e.getMessage().equals("401 Token expired")) {
+                if (firstTry && e.getMessage().equals("401 Token expired")) {
                     tokenSupplier.invalidateToken(wiseToken);
                     tokenSupplier.invalidateToken(writelyToken);
                     wiseToken = null;
                     writelyToken = null;
 
-                    return internalExecute(true);
+                    return internalExecute(false);
                 } else {
                     throw new SpreadsheetsHttpException(e.response.statusCode, e.response.statusMessage);
                 }
@@ -281,6 +281,41 @@ public class SpreadsheetsService {
             }
 
         };
+    }
+    
+    public void createSpreadsheet(String title, boolean hidden) throws IOException, SpreadsheetsException {
+        
+        final GenericUrl url = new GenericUrl("https://docs.google.com/feeds/default/private/full");
+        
+        final StringBuilder builder = new StringBuilder();
+        builder.append("<?xml version='1.0' encoding='UTF-8'?>")
+        .append("<entry xmlns=\"http://www.w3.org/2005/Atom\">")
+        .append("<category scheme=\"http://schemas.google.com/g/2005#kind\" ")
+        .append("term=\"http://schemas.google.com/docs/2007#spreadsheet\"/>");
+        if (hidden) {
+            builder.append("<category scheme=\"http://schemas.google.com/g/2005/labels\" ")
+            .append("term=\"http://schemas.google.com/g/2005/labels#hidden\" label=\"hidden\"/>");
+        }
+        builder.append("<title>").append(title).append("</title></entry>");
+        
+        new Request<Void>() {
+            public Void run() throws IOException, XmlPullParserException {
+                ByteArrayContent content = new ByteArrayContent(builder.toString());
+                HttpRequest request = writelyRequestFactory.buildPostRequest(url, content);
+                
+                request.enableGZipContent = false;
+                request.headers.contentType = "application/atom+xml";
+                request.headers.acceptEncoding = null;
+                request.headers.contentEncoding = null;
+                
+                HttpResponse response = request.execute();
+                                 
+                // can't find a way to use the response to find a link to the created
+                // spreadsheet, as a Spreadsheet API link, so ignore() it for now.
+                response.ignore(); 
+                return null;
+            }
+        }.execute();
     }
     
 
