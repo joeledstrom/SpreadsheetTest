@@ -53,17 +53,37 @@ public class Worksheet {
     private String title;
     private String listFeed;
     private String cellsFeed;
+    private String editUrl;
+    private int rowCount;
     
     private AtomParser atomParser;
 
-    Worksheet(SpreadsheetsService service, String id, String title, String listFeed, String cellsFeed) {
+    Worksheet(SpreadsheetsService service, String id, String title, String listFeed, 
+              String cellsFeed, String editUrl, String rowCount) {
         this.service = service;
         this.id = id;
         this.title = title;
         this.listFeed = listFeed;
         this.cellsFeed = cellsFeed;
+        this.editUrl = editUrl;
+        this.rowCount = Integer.parseInt(rowCount);
     }
 
+    public void applyDelete() throws IOException, SpreadsheetsException {
+        
+        service.new Request<Void>() {
+            public Void run() throws IOException, XmlPullParserException {
+                WiseUrl url = new WiseUrl(editUrl);
+                HttpRequest request = service.wiseRequestFactory.buildDeleteRequest(url);
+                
+                request.headers.ifMatch = "*";
+                request.execute().ignore();
+                
+                return null;
+            }
+        }.execute();
+       
+    }
 
     public String getTitle() {
         return title;
@@ -71,6 +91,10 @@ public class Worksheet {
     
     public String getId() {
         return id;
+    }
+    
+    public int getRowCount() {
+        return rowCount;
     }
 
     
@@ -207,7 +231,7 @@ public class Worksheet {
         int retryCounter = 0;
         while (failedUploads.size() != 0) {
             if(retryCounter > 3)
-                throw new SpreadsheetsException("setColumns(..) FAILURE");
+                throw new IOException("setColumns(..) FAILURE");
             
             
             failedUploads = batchUpload(failedUploads);
@@ -227,9 +251,9 @@ public class Worksheet {
         builder.append("<entry xmlns=\"http://www.w3.org/2005/Atom\" xmlns:gsx=\"http://schemas.google.com/spreadsheets/2006/extended\">");
         Formatter formatter = new Formatter(builder, Locale.US); 
         for (Map.Entry<String, String> value : values.entrySet()) 
-            formatter.format("<gsx:%1$s>%2$s</gsx:%1$s>", value.getKey(), value.getValue());
+            formatter.format("<gsx:%1$s>%2$s</gsx:%1$s>", Utils.encodeXML(value.getKey()), Utils.encodeXML(value.getValue()));
         builder.append("</entry>");
-        
+               
         
         return service.new Request<WorksheetRow>() {
             public WorksheetRow run() throws IOException, XmlPullParserException {
@@ -248,9 +272,12 @@ public class Worksheet {
                 
                 ListEntry entry = atomParser.parse(response, ListEntry.class);
                 
+                
                 return new WorksheetRow(service, entry.etag, entry.id, entry.getEditUrl(), entry.getValues());
             }
         }.execute();
+        
+        
     }
 
     static final XmlNamespaceDictionary LIST_FEED_NS = new XmlNamespaceDictionary()

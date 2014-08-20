@@ -84,7 +84,7 @@ public class Spreadsheet {
                 if (entry == null)
                     return null;
 
-                return new Worksheet(service, entry.id, entry.title, entry.getListFeed(), entry.getCellsFeed());
+                return new Worksheet(service, entry.id, entry.title, entry.getListFeed(), entry.getCellsFeed(), entry.getEditUrl(), entry.rowCount);
             }
 
         };
@@ -124,7 +124,7 @@ public class Spreadsheet {
                 
                 WorksheetEntry entry = atomParser.parse(response, WorksheetEntry.class);
                 
-                return new Worksheet(service, entry.id, entry.title, entry.getListFeed(), entry.getCellsFeed());
+                return new Worksheet(service, entry.id, entry.title, entry.getListFeed(), entry.getCellsFeed(), entry.getEditUrl(), entry.rowCount);
             }
         }.execute();
         
@@ -140,6 +140,7 @@ public class Spreadsheet {
     public static class WorksheetEntry {
         @Key public String title;
         @Key public String id;
+        @Key("gs:rowCount") public String rowCount;
         @Key("link") List<WorksheetLink> links;
         @Key WorksheetContent content;
         
@@ -148,6 +149,9 @@ public class Spreadsheet {
         }
         public String getListFeed() throws XmlPullParserException {
             return content.src;
+        }
+        public String getEditUrl() throws XmlPullParserException {
+            return getLinkHrefByRel("edit");
         }
         private String getLinkHrefByRel(String rel) throws XmlPullParserException {
             String href = null;

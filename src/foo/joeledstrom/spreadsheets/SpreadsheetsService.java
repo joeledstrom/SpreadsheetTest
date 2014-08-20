@@ -44,19 +44,16 @@ public class SpreadsheetsService {
     HttpRequestFactory wiseRequestFactory;
     HttpRequestFactory writelyRequestFactory;
     private final String applicationName;
-    private final TokenSupplier tokenSupplier;
     private String wiseToken;
     private String writelyToken;
     
 
+    
     private void createRequestFactories() {
         HttpTransport transport = AndroidHttp.newCompatibleTransport();
 
         wiseRequestFactory = transport.createRequestFactory(new HttpRequestInitializer() {
             public void initialize(HttpRequest req) throws IOException {
-
-                if (wiseToken == null)
-                    wiseToken = tokenSupplier.getToken("wise"); 
 
                 GoogleHeaders headers = new GoogleHeaders();
                 headers.gdataVersion = "3";
@@ -70,10 +67,7 @@ public class SpreadsheetsService {
         
         writelyRequestFactory = transport.createRequestFactory(new HttpRequestInitializer() {
            public void initialize(HttpRequest req) throws IOException {
-                if (writelyToken == null)
-                    writelyToken = tokenSupplier.getToken("writely");
-
-
+                
                 GoogleHeaders headers = new GoogleHeaders();
                 headers.gdataVersion = "3";
                 headers.setApplicationName(applicationName);
@@ -85,21 +79,22 @@ public class SpreadsheetsService {
         });
     }
 
-    public interface TokenSupplier {    
-        public String getToken(String authTokenType);
-        public void invalidateToken(String token);
+    
+    public void setTokens(String writely, String wise) {
+        writelyToken = writely;
+        wiseToken = wise;
+        
     }
 
-    public SpreadsheetsService(String applicationName, TokenSupplier tokenSupplier) {
+    public SpreadsheetsService(String applicationName) {
 
         this.applicationName = applicationName;
-        this.tokenSupplier = tokenSupplier;
 
         createRequestFactories();
 
         // from Google IO 2011 talk:
         // Note. enabling this causes OutOfMemoryError on large spreadsheets
-        Logger.getLogger("com.google.api.client.http").setLevel(Level.ALL);  
+        //Logger.getLogger("com.google.api.client.http").setLevel(Level.ALL);  
         // ALSO RUN FROM SHELL: adb shell setprop log.tag.HttpTransport DEBUG
 
     }
@@ -111,6 +106,13 @@ public class SpreadsheetsService {
 
         SpreadsheetsException(String message) {
             super(message);
+        }
+    }
+    
+    public static class SpreadsheetsTokenExpiredException extends SpreadsheetsException {
+        private static final long serialVersionUID = 6766168964540923877L;
+        SpreadsheetsTokenExpiredException() {
+            super("401 Token expired");
         }
     }
 
@@ -139,37 +141,28 @@ public class SpreadsheetsService {
         }
 
     }
+    
+    
 
-    // Automatically retries all requests after invalidating tokens, and converts exceptions.
+    // Converts exceptions
     abstract class Request<T> {
         
         abstract T run() throws IOException, XmlPullParserException;
         
         public final T execute() throws IOException, SpreadsheetsException {
-            return internalExecute(true);
-        }
-        private final T internalExecute(boolean firstTry) throws IOException, SpreadsheetsException {
-           
             try {
-                T response = run();
-                return response;
+                return run();
             } catch (HttpResponseException e) {
-                if (firstTry && e.getMessage().equals("401 Token expired")) {
-                    tokenSupplier.invalidateToken(wiseToken);
-                    tokenSupplier.invalidateToken(writelyToken);
-                    wiseToken = null;
-                    writelyToken = null;
-
-                    return internalExecute(false);
-                } else {
+                if (e.getMessage().equals("401 Token expired")) {
+                    throw new SpreadsheetsTokenExpiredException();
+                } else { 
                     throw new SpreadsheetsHttpException(e.response.statusCode, e.response.statusMessage);
                 }
             } catch (XmlPullParserException e) {
                 throw new SpreadsheetsException(e.getMessage());
             } 
-           
-            
         }
+       
     }
     
     @SuppressWarnings("rawtypes")
@@ -296,7 +289,7 @@ public class SpreadsheetsService {
             builder.append("<category scheme=\"http://schemas.google.com/g/2005/labels\" ")
             .append("term=\"http://schemas.google.com/g/2005/labels#hidden\" label=\"hidden\"/>");
         }
-        builder.append("<title>").append(title).append("</title></entry>");
+        builder.append("<title>").append(Utils.encodeXML(title)).append("</title></entry>");
         
         new Request<Void>() {
             public Void run() throws IOException, XmlPullParserException {

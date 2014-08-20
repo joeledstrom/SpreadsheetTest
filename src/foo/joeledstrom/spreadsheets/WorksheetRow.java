@@ -67,6 +67,43 @@ public class WorksheetRow {
         commitChanges(false);
     }
     
+    public boolean commitDelete() throws IOException, SpreadsheetsException {
+        return delete(true);
+    }
+    
+    public void applyDelete() throws IOException, SpreadsheetsException {
+        delete(false);
+    }
+    
+    
+    private boolean delete(final boolean useETag) throws IOException, SpreadsheetsException {
+        
+        try {
+            service.new Request<Void>() {
+                public Void run() throws IOException, XmlPullParserException {
+                    WiseUrl url = new WiseUrl(editUrl);
+                    HttpRequest request = service.wiseRequestFactory.buildDeleteRequest(url);
+                    
+                    if (useETag)
+                        request.headers.ifMatch = etag;
+                    else
+                        request.headers.ifMatch = "*";
+                    
+                    request.execute().ignore();
+                    
+                    return null;
+                }
+            }.execute();
+        } catch (SpreadsheetsException e) {
+            if (e.getMessage().equals("412 Precondition Failed")) {
+                return false;
+            } else {
+                throw e;
+            }
+        }
+        
+        return true;
+    }
     private boolean commitChanges(final boolean useETag) throws IOException, SpreadsheetsException {
         
         if (!dirty)
@@ -80,7 +117,8 @@ public class WorksheetRow {
         
         
         for (Map.Entry<String, String> value : values.entrySet()) 
-            formatter.format("<gsx:%1$s>%2$s</gsx:%1$s>", value.getKey(), value.getValue());
+            formatter.format("<gsx:%1$s>%2$s</gsx:%1$s>", Utils.encodeXML(value.getKey()), 
+            										      Utils.encodeXML(value.getValue()));
         builder.append("</entry>");
        
         WorksheetRow updatedRow;
